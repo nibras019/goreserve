@@ -1,10 +1,9 @@
 <?php
-
+// app/Policies/BookingPolicy.php
 namespace App\Policies;
 
 use App\Models\Booking;
 use App\Models\User;
-use Illuminate\Auth\Access\Response;
 
 class BookingPolicy
 {
@@ -13,7 +12,7 @@ class BookingPolicy
      */
     public function viewAny(User $user): bool
     {
-        return false;
+        return true; // Users can view their own bookings
     }
 
     /**
@@ -21,7 +20,10 @@ class BookingPolicy
      */
     public function view(User $user, Booking $booking): bool
     {
-        return false;
+        // User can view their own booking, business owner can view bookings for their business
+        return $user->id === $booking->user_id || 
+               ($user->hasRole('vendor') && $user->business && $user->business->id === $booking->business_id) ||
+               $user->hasRole('admin');
     }
 
     /**
@@ -29,7 +31,7 @@ class BookingPolicy
      */
     public function create(User $user): bool
     {
-        return false;
+        return $user->hasRole('customer') || $user->hasRole('vendor');
     }
 
     /**
@@ -37,7 +39,18 @@ class BookingPolicy
      */
     public function update(User $user, Booking $booking): bool
     {
-        return false;
+        // Customer can reschedule their own booking (if not too late)
+        if ($user->id === $booking->user_id) {
+            return $booking->canBeCancelled() && in_array($booking->status, ['pending', 'confirmed']);
+        }
+
+        // Business owner can update bookings for their business
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $booking->business_id;
+        }
+
+        // Admin can update any booking
+        return $user->hasRole('admin');
     }
 
     /**
@@ -45,22 +58,54 @@ class BookingPolicy
      */
     public function delete(User $user, Booking $booking): bool
     {
-        return false;
+        return $this->cancel($user, $booking);
     }
 
     /**
-     * Determine whether the user can restore the model.
+     * Determine whether the user can cancel the booking.
      */
-    public function restore(User $user, Booking $booking): bool
+    public function cancel(User $user, Booking $booking): bool
     {
-        return false;
+        // Customer can cancel their own booking
+        if ($user->id === $booking->user_id) {
+            return $booking->canBeCancelled();
+        }
+
+        // Business owner can cancel bookings for their business
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $booking->business_id;
+        }
+
+        // Admin can cancel any booking
+        return $user->hasRole('admin');
     }
 
     /**
-     * Determine whether the user can permanently delete the model.
+     * Determine whether the user can reschedule the booking.
      */
-    public function forceDelete(User $user, Booking $booking): bool
+    public function reschedule(User $user, Booking $booking): bool
     {
-        return false;
+        return $this->update($user, $booking) && $booking->canBeCancelled();
+    }
+
+    /**
+     * Determine whether the user can mark booking as completed.
+     */
+    public function complete(User $user, Booking $booking): bool
+    {
+        // Only business owner or staff can mark as completed
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $booking->business_id;
+        }
+
+        return $user->hasRole('admin');
+    }
+
+    /**
+     * Determine whether the user can mark booking as no-show.
+     */
+    public function markNoShow(User $user, Booking $booking): bool
+    {
+        return $this->complete($user, $booking);
     }
 }

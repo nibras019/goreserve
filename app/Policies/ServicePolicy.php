@@ -4,7 +4,6 @@ namespace App\Policies;
 
 use App\Models\Service;
 use App\Models\User;
-use Illuminate\Auth\Access\Response;
 
 class ServicePolicy
 {
@@ -13,7 +12,7 @@ class ServicePolicy
      */
     public function viewAny(User $user): bool
     {
-        return false;
+        return true; // Anyone can view services
     }
 
     /**
@@ -21,7 +20,18 @@ class ServicePolicy
      */
     public function view(User $user, Service $service): bool
     {
-        return false;
+        // Public services can be viewed by anyone if business is approved
+        if ($service->business->status === 'approved' && $service->is_active) {
+            return true;
+        }
+
+        // Business owner can view their own services
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $service->business_id;
+        }
+
+        // Admin can view any service
+        return $user->hasRole('admin');
     }
 
     /**
@@ -29,7 +39,8 @@ class ServicePolicy
      */
     public function create(User $user): bool
     {
-        return false;
+        // Only business owners can create services
+        return $user->hasRole('vendor') && $user->business && $user->business->status === 'approved';
     }
 
     /**
@@ -37,7 +48,13 @@ class ServicePolicy
      */
     public function update(User $user, Service $service): bool
     {
-        return false;
+        // Business owner can update their own services
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $service->business_id;
+        }
+
+        // Admin can update any service
+        return $user->hasRole('admin');
     }
 
     /**
@@ -45,22 +62,50 @@ class ServicePolicy
      */
     public function delete(User $user, Service $service): bool
     {
-        return false;
+        // Check if service has future bookings
+        $hasFutureBookings = $service->bookings()
+            ->where('booking_date', '>=', today())
+            ->where('status', '!=', 'cancelled')
+            ->exists();
+
+        if ($hasFutureBookings) {
+            return false;
+        }
+
+        // Business owner can delete their own services
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $service->business_id;
+        }
+
+        // Admin can delete any service
+        return $user->hasRole('admin');
     }
 
     /**
-     * Determine whether the user can restore the model.
+     * Determine whether the user can manage service staff.
      */
-    public function restore(User $user, Service $service): bool
+    public function manageStaff(User $user, Service $service): bool
     {
-        return false;
+        return $this->update($user, $service);
     }
 
     /**
-     * Determine whether the user can permanently delete the model.
+     * Determine whether the user can view service analytics.
      */
-    public function forceDelete(User $user, Service $service): bool
+    public function viewAnalytics(User $user, Service $service): bool
     {
-        return false;
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $service->business_id;
+        }
+
+        return $user->hasRole('admin');
+    }
+
+    /**
+     * Determine whether the user can toggle service status.
+     */
+    public function toggleStatus(User $user, Service $service): bool
+    {
+        return $this->update($user, $service);
     }
 }

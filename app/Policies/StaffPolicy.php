@@ -4,7 +4,6 @@ namespace App\Policies;
 
 use App\Models\Staff;
 use App\Models\User;
-use Illuminate\Auth\Access\Response;
 
 class StaffPolicy
 {
@@ -13,7 +12,7 @@ class StaffPolicy
      */
     public function viewAny(User $user): bool
     {
-        return false;
+        return $user->hasRole('vendor') || $user->hasRole('admin');
     }
 
     /**
@@ -21,7 +20,13 @@ class StaffPolicy
      */
     public function view(User $user, Staff $staff): bool
     {
-        return false;
+        // Business owner can view their own staff
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $staff->business_id;
+        }
+
+        // Admin can view any staff
+        return $user->hasRole('admin');
     }
 
     /**
@@ -29,7 +34,8 @@ class StaffPolicy
      */
     public function create(User $user): bool
     {
-        return false;
+        // Only business owners can create staff
+        return $user->hasRole('vendor') && $user->business && $user->business->status === 'approved';
     }
 
     /**
@@ -37,7 +43,13 @@ class StaffPolicy
      */
     public function update(User $user, Staff $staff): bool
     {
-        return false;
+        // Business owner can update their own staff
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $staff->business_id;
+        }
+
+        // Admin can update any staff
+        return $user->hasRole('admin');
     }
 
     /**
@@ -45,22 +57,58 @@ class StaffPolicy
      */
     public function delete(User $user, Staff $staff): bool
     {
-        return false;
+        // Check if staff has future bookings
+        $hasFutureBookings = $staff->bookings()
+            ->where('booking_date', '>=', today())
+            ->where('status', '!=', 'cancelled')
+            ->exists();
+
+        if ($hasFutureBookings) {
+            return false;
+        }
+
+        // Business owner can delete their own staff
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $staff->business_id;
+        }
+
+        // Admin can delete any staff
+        return $user->hasRole('admin');
     }
 
     /**
-     * Determine whether the user can restore the model.
+     * Determine whether the user can manage staff availability.
      */
-    public function restore(User $user, Staff $staff): bool
+    public function manageAvailability(User $user, Staff $staff): bool
     {
-        return false;
+        return $this->update($user, $staff);
     }
 
     /**
-     * Determine whether the user can permanently delete the model.
+     * Determine whether the user can assign services to staff.
      */
-    public function forceDelete(User $user, Staff $staff): bool
+    public function assignServices(User $user, Staff $staff): bool
     {
-        return false;
+        return $this->update($user, $staff);
+    }
+
+    /**
+     * Determine whether the user can view staff schedule.
+     */
+    public function viewSchedule(User $user, Staff $staff): bool
+    {
+        return $this->view($user, $staff);
+    }
+
+    /**
+     * Determine whether the user can view staff performance.
+     */
+    public function viewPerformance(User $user, Staff $staff): bool
+    {
+        if ($user->hasRole('vendor') && $user->business) {
+            return $user->business->id === $staff->business_id;
+        }
+
+        return $user->hasRole('admin');
     }
 }

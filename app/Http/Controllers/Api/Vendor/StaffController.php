@@ -425,23 +425,168 @@ class StaffController extends Controller
         return round(($bookedMinutes / $totalWorkingMinutes) * 100, 2);
     }
 
-    /**
-     * Get upcoming schedule for staff
-     */
-    private function getUpcomingSchedule($staff, $days)
-    {
-        $schedule = [];
-        $startDate = now();
-        $endDate = now()->addDays($days);
+   /**
+ * Get upcoming schedule for staff
+ */
+private function getUpcomingSchedule($staff, $days)
+{
+    $schedule = [];
+    $startDate = now();
+    $endDate = now()->addDays($days);
 
-        $period = Carbon::parse($startDate)->daysUntil($endDate);
+    $period = Carbon::parse($startDate)->daysUntil($endDate);
 
-        foreach ($bookings as $booking) {
-            $start = Carbon::parse($booking->booking_date->format('Y-m-d') . ' ' . $booking->start_time);
-            $end = Carbon::parse($booking->booking_date->format('Y-m-d') . ' ' . $booking->end_time);
-            $bookedMinutes += $end->diffInMinutes($start);
+    foreach ($period as $date) {
+        $dayOfWeek = strtolower($date->format('l'));
+        $workingHours = $staff->working_hours[$dayOfWeek] ?? null;
+
+        // Get bookings for this day
+        $dayBookings = $staff->bookings()
+            ->where('booking_date', $date->format('Y-m-d'))
+            ->where('status', '!=', 'cancelled')
+            ->with(['service', 'user'])
+            ->orderBy('start_time')
+            ->get();
+
+        // Check for availability blocks
+        $availability = $staff->availabilities()
+            ->where('date', $date->format('Y-m-d'))
+            ->first();
+
+        $daySchedule = [
+            'date' => $date->format('Y-m-d'),
+            'day_name' => $date->format('l'),
+            'is_working_day' => !empty($workingHours),
+            'working_hours' => $workingHours,
+            'availability_status' => $this->getAvailabilityStatus($availability),
+            'bookings' => $dayBookings->map(function ($booking) {
+                return [
+                    'id' => $booking->id,
+                    'booking_ref' => $booking->booking_ref,
+                    'start_time' => $booking->start_time,
+                    'end_time' => $booking->end_time,
+                    'service' => $booking->service->name,
+                    'customer' => [
+                        'name' => $booking->user->name,
+                        'phone' => $booking->user->phone
+                    ],
+                    'status' => $booking->status,
+                    'amount' => $booking->amount
+                ];
+            }),
+            'total_bookings' => $dayBookings->count(),
+            'total_revenue' => $dayBookings->where('payment_status', 'paid')->sum('amount'),
+            'utilization_hours' => $this->calculateDayUtilization($dayBookings, $workingHours)
+        ];
+
+        $schedule[] = $daySchedule;
+    }
+
+    return $schedule;
+}
+
+/**
+ * Get availability status for a day
+ */
+private function getAvailabilityStatus($availability)
+{
+    if (!$availability) {
+        return 'available';
+    }
+
+    return match($availability->type) {
+        'vacation' => 'on_vacation',
+        'sick' => 'sick_leave',
+        'blocked' => 'unavailable',
+        default => 'available'
+    };
+}
+
+/**
+ * Calculate day utilization
+ */
+private function calculateDayUtilization($bookings, $workingHours)
+{
+    if (!$workingHours || !isset($workingHours['open']) || !isset($workingHours['close'])) {
+        return 0;
+    }
+
+    $totalWorkingMinutes = Carbon::parse($workingHours['close'])->diffInMinutes(Carbon::parse($workingHours['open']));
+    
+    $bookedMinutes = $bookings->sum(function ($booking) {
+        return Carbon::parse($booking->end_time)->diffInMinutes(Carbon::parse($booking->start_time));
+    });
+
+    return $totalWorkingMinutes > 0 ? round(($bookedMinutes / $totalWorkingMinutes) * 100, 2) : 0;
+}
+
+/**
+ * Get schedule for date range
+ */
+private function getSchedule($staff, $startDate, $endDate)
+{
+    $schedule = [];
+    $period = Carbon::parse($startDate)->daysUntil($endDate);
+
+    foreach ($period as $date) {
+        $dayOfWeek = strtolower($date->format('l'));
+        $workingHours = $staff->working_hours[$dayOfWeek] ?? null;
+
+        // Get bookings for this day
+        $dayBookings = $staff->bookings()
+            ->where('booking_date', $date->format('Y-m-d'))
+            ->where('status', '!=', 'cancelled')
+            ->with(['service', 'user'])
+            ->orderBy('start_time')
+            ->get();
+
+        // Check for availability overrides
+        $availability = $staff->availabilities()
+            ->where('date', $date->format('Y-m-d'))
+            ->first();
+
+        // Generate time slots
+        $timeSlots = [];
+        if ($workingHours && !$this->isBlockedDay($availability)) {
+            $timeSlots = $this->generateTimeSlots($workingHours, $dayBookings, $availability);
         }
 
-        return round(($bookedMinutes / $totalWorkingMinutes) * 100, 2);
+        $schedule[] = [
+            'date' => $date->format('Y-m-d'),
+            'day_name' => $date->format('l'),
+            'working_hours' => $workingHours,
+            'is_available' => $this->isDayAvailable($workingHours, $availability),
+            'availability_note' => $availability?->reason,
+            'bookings' => $dayBookings->map(function ($booking) {
+                return [
+                    'id' => $booking->id,
+                    'booking_ref' => $booking->booking_ref,
+                    'start_time' => $booking->start_time,
+                    'end_time' => $booking->end_time,
+                    'duration' => Carbon::parse($booking->end_time)->diffInMinutes(Carbon::parse($booking->start_time)),
+                    'service' => [
+                        'id' => $booking->service->id,
+                        'name' => $booking->service->name
+                    ],
+                    'customer' => [
+                        'id' => $booking->user->id,
+                        'name' => $booking->user->name,
+                        'phone' => $booking->user->phone ?? null
+                    ],
+                    'status' => $booking->status,
+                    'amount' => $booking->amount
+                ];
+            }),
+            'time_slots' => $timeSlots,
+            'stats' => [
+                'total_bookings' => $dayBookings->count(),
+                'total_duration' => $dayBookings->sum(function ($booking) {
+                    return Carbon::parse($booking->end_time)->diffInMinutes(Carbon::parse($booking->start_time));
+                }),
+                'total_revenue' => $dayBookings->where('payment_status', 'paid')->sum('amount')
+            ]
+        ];
     }
-}
+
+    }
+} 

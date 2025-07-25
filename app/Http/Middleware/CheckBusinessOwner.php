@@ -10,11 +10,32 @@ class CheckBusinessOwner
 {
     /**
      * Handle an incoming request.
-     *
-     * @param  \Closure(\Illuminate\Http\Request): (\Symfony\Component\HttpFoundation\Response)  $next
      */
     public function handle(Request $request, Closure $next): Response
     {
+        $user = $request->user();
+        
+        if (!$user) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Authentication required'
+            ], 401);
+        }
+
+        if (!$user->hasRole('vendor')) {
+            return response()->json([
+                'success' => false,
+                'message' => 'Vendor access required'
+            ], 403);
+        }
+
+        if (!$user->business) {
+            return response()->json([
+                'success' => false,
+                'message' => 'No business found for this vendor'
+            ], 404);
+        }
+
         return $next($request);
     }
-}
+}    
