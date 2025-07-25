@@ -6,23 +6,54 @@ use Illuminate\Foundation\Http\FormRequest;
 
 class CreateServiceRequest extends FormRequest
 {
-    /**
-     * Determine if the user is authorized to make this request.
-     */
     public function authorize(): bool
     {
-        return false;
+        return $this->user()->hasRole('vendor') && $this->user()->business;
     }
 
-    /**
-     * Get the validation rules that apply to the request.
-     *
-     * @return array<string, \Illuminate\Contracts\Validation\ValidationRule|array<mixed>|string>
-     */
     public function rules(): array
     {
         return [
-            //
+            'name' => 'required|string|max:255',
+            'description' => 'nullable|string|max:1000',
+            'category' => 'required|string|max:100',
+            'price' => 'required|numeric|min:0|max:999999.99',
+            'duration' => 'required|integer|min:15|max:480', // 15 minutes to 8 hours
+            'is_active' => 'nullable|boolean',
+            'max_bookings_per_slot' => 'nullable|integer|min:1|max:100',
+            'advance_booking_days' => 'nullable|integer|min:1|max:365',
+            'min_advance_hours' => 'nullable|integer|min:0|max:168',
+            'cancellation_hours' => 'nullable|integer|min:0|max:168',
+            'staff_ids' => 'nullable|array',
+            'staff_ids.*' => 'integer|exists:staff,id',
+            'images' => 'nullable|array|max:5',
+            'images.*' => 'image|mimes:jpeg,png,jpg,gif|max:2048',
+            'settings' => 'nullable|array',
         ];
+    }
+
+    public function messages(): array
+    {
+        return [
+            'name.required' => 'Service name is required.',
+            'category.required' => 'Service category is required.',
+            'price.required' => 'Service price is required.',
+            'price.min' => 'Service price cannot be negative.',
+            'duration.required' => 'Service duration is required.',
+            'duration.min' => 'Service duration must be at least 15 minutes.',
+            'duration.max' => 'Service duration cannot exceed 8 hours.',
+            'images.max' => 'You can upload maximum 5 images.',
+            'images.*.image' => 'All files must be images.',
+            'images.*.max' => 'Each image must not exceed 2MB.',
+        ];
+    }
+
+    protected function prepareForValidation()
+    {
+        if ($this->has('staff_ids') && is_string($this->staff_ids)) {
+            $this->merge([
+                'staff_ids' => json_decode($this->staff_ids, true) ?: []
+            ]);
+        }
     }
 }
