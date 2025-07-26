@@ -1,9 +1,9 @@
 <?php
+
 namespace App\Providers;
 
 use Illuminate\Support\ServiceProvider;
 use Illuminate\Support\Facades\Schema;
-use Illuminate\Support\Facades\Gate;
 use Illuminate\Pagination\Paginator;
 use App\Models\Booking;
 use App\Models\Payment;
@@ -45,10 +45,12 @@ class AppServiceProvider extends ServiceProvider
             \App\Services\GeolocationService::class
         );
 
-        // Development helpers
+        // Development helpers - FIXED VERSION
         if ($this->app->environment('local')) {
-            $this->app->register(\Laravel\Telescope\TelescopeServiceProvider::class);
-            $this->app->register(TelescopeServiceProvider::class);
+            // Only register Telescope if it's actually installed
+            if (class_exists(\Laravel\Telescope\TelescopeServiceProvider::class)) {
+                $this->app->register(\Laravel\Telescope\TelescopeServiceProvider::class);
+            }
         }
     }
 
@@ -88,7 +90,7 @@ class AppServiceProvider extends ServiceProvider
         });
 
         // Super admin gate
-        Gate::before(function ($user, $ability) {
+        \Gate::before(function ($user, $ability) {
             return $user->hasRole('super-admin') ? true : null;
         });
 
