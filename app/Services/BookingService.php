@@ -5,8 +5,15 @@ namespace App\Services;
 use App\Models\Booking;
 use App\Models\Service;
 use App\Models\Business;
+use App\Models\User;
+use App\Models\PromoCode;
 use App\Exceptions\BookingConflictException;
+use App\Exceptions\BookingException;
+use App\Exceptions\SlotUnavailableException;
+use App\Exceptions\InvalidPromoCodeException;
 use App\Repositories\Contracts\BookingRepositoryInterface;
+use App\Events\BookingCreated;
+use App\Events\BookingCancelled;
 use Carbon\Carbon;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -16,6 +23,8 @@ class BookingService
     public function __construct(
         private BookingRepositoryInterface $bookingRepository,
         private CacheService $cacheService,
+        private AvailabilityService $availabilityService,
+        private PaymentService $paymentService,
         private NotificationService $notificationService
     ) {}
 
@@ -83,14 +92,95 @@ class BookingService
         }
     }
 
+    public function createBooking(array $data): Booking
+    {
+        DB::beginTransaction();
+
+        try {
+            // Validate availability
+            $this->validateAvailability($data);
+
+            // Apply promo code if provided
+            if (!empty($data['promo_code'])) {
+                $data = $this->applyPromoCode($data, $data['promo_code']);
+            }
+
+            // Create booking
+            $booking = Booking::create($data);
+
+            // Calculate end time
+            $endTime = Carbon::parse($data['start_time'])
+                ->addMinutes($booking->service->duration)
+                ->format('H:i');
+            
+            $booking->update(['end_time' => $endTime]);
+
+            // Send notifications
+            $this->notificationService->sendBookingCreated($booking);
+
+            // Clear availability cache
+            $this->clearAvailabilityCache($booking);
+
+            DB::commit();
+
+            event(new BookingCreated($booking));
+
+            return $booking;
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw new BookingException('Failed to create booking: ' . $e->getMessage());
+        }
+    }
+
+    public function cancelBooking(Booking $booking, string $reason, User $cancelledBy = null): bool
+    {
+        if (!$booking->canBeCancelled()) {
+            throw new BookingException('This booking cannot be cancelled');
+        }
+
+        DB::beginTransaction();
+
+        try {
+            $refundAmount = $booking->calculateRefundAmount();
+
+            $booking->update([
+                'status' => 'cancelled',
+                'cancellation_reason' => $reason,
+                'cancelled_at' => now(),
+                'cancelled_by' => $cancelledBy?->id ?? 'system'
+            ]);
+
+            // Process refund if applicable
+            if ($refundAmount > 0 && $booking->payment_status === 'paid') {
+                $this->paymentService->processRefund($booking, $refundAmount);
+            }
+
+            // Send notifications
+            $this->notificationService->sendBookingCancelled($booking);
+
+            // Clear cache
+            $this->clearAvailabilityCache($booking);
+
+            DB::commit();
+
+            event(new BookingCancelled($booking, $cancelledBy, $reason, $refundAmount > 0));
+
+            return true;
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            throw new BookingException('Failed to cancel booking: ' . $e->getMessage());
+        }
+    }
+
     public function processRefund(Booking $booking, float $refundPercentage = 1.0): bool
     {
         try {
             $refundAmount = $booking->amount * $refundPercentage;
             
             // Process refund through payment service
-            $paymentService = app(PaymentService::class);
-            $refundSuccess = $paymentService->refund($booking->payments()->latest()->first(), $refundAmount);
+            $refundSuccess = $this->paymentService->refund($booking->payments()->latest()->first(), $refundAmount);
 
             if ($refundSuccess) {
                 $booking->update([
@@ -139,6 +229,39 @@ class BookingService
             'discounts' => $this->getAvailableDiscounts($userId, $service),
             'bundle_suggestions' => $this->getBundleRecommendations($userId, $service)
         ];
+    }
+
+    private function validateAvailability(array $data): void
+    {
+        $isAvailable = $this->availabilityService->isSlotAvailable(
+            $data['service_id'],
+            $data['booking_date'],
+            $data['start_time'],
+            $data['staff_id'] ?? null
+        );
+
+        if (!$isAvailable) {
+            throw new SlotUnavailableException('Selected time slot is not available');
+        }
+    }
+
+    private function applyPromoCode(array $data, string $promoCode): array
+    {
+        $promo = PromoCode::where('code', $promoCode)
+            ->active()
+            ->first();
+
+        if (!$promo || !$promo->isValid($data['amount'], $data['user_id'], $data['business_id'])) {
+            throw new InvalidPromoCodeException('Invalid or expired promo code');
+        }
+
+        $discount = $promo->calculateDiscount($data['amount']);
+        
+        $data['promo_code_id'] = $promo->id;
+        $data['discount_amount'] = $discount;
+        $data['amount'] -= $discount;
+
+        return $data;
     }
 
     private function validateBusinessHours(array $data): void

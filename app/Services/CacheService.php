@@ -120,4 +120,31 @@ class CacheService
             'availability' => $maxCapacity > 0 ? max(0, $maxCapacity - $bookingsCount) : 0
         ];
     }
+
+    public static function getBusinessKey(int $businessId): string
+    {
+        return "business_{$businessId}";
+    }
+
+    public static function getAvailabilityKey(int $serviceId, string $date, ?int $staffId = null): string
+    {
+        return "availability_{$serviceId}_{$date}" . ($staffId ? "_{$staffId}" : '');
+    }
+
+    public static function clearBusinessCache(int $businessId): void
+    {
+        Cache::tags(["business_{$businessId}", 'businesses'])->flush();
+    }
+
+    public static function clearAvailabilityCache(Booking $booking): void
+    {
+        $keys = [
+            self::getAvailabilityKey($booking->service_id, $booking->booking_date->format('Y-m-d')),
+            self::getAvailabilityKey($booking->service_id, $booking->booking_date->format('Y-m-d'), $booking->staff_id),
+        ];
+
+        foreach ($keys as $key) {
+            Cache::forget($key);
+        }
+    }
 }

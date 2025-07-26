@@ -7,12 +7,15 @@ use App\Models\Business;
 use App\Models\Service;
 use App\Repositories\Contracts\BookingRepositoryInterface;
 use Carbon\Carbon;
+use Illuminate\Database\Eloquent\Builder;
 use Illuminate\Pagination\LengthAwarePaginator;
 use Illuminate\Support\Collection;
 use Illuminate\Support\Facades\Cache;
 
 class BookingRepository implements BookingRepositoryInterface
 {
+    public function __construct(private Booking $model) {}
+
     public function create(array $data): Booking
     {
         return Booking::create($data);
@@ -21,7 +24,7 @@ class BookingRepository implements BookingRepositoryInterface
     public function findById(int $id): ?Booking
     {
         return Cache::remember("booking:{$id}", 300, function () use ($id) {
-            return Booking::with(['user', 'business', 'service', 'staff'])->find($id);
+            return $this->model->with(['user', 'business', 'service', 'staff'])->find($id);
         });
     }
 
@@ -36,26 +39,18 @@ class BookingRepository implements BookingRepositoryInterface
 
     public function getForUser(int $userId, array $filters = []): LengthAwarePaginator
     {
-        $query = Booking::with(['business', 'service', 'staff'])
-            ->where('user_id', $userId);
+        $query = $this->model->where('user_id', $userId)
+            ->with(['business', 'service', 'staff']);
 
-        $this->applyFilters($query, $filters);
-
-        return $query->orderBy('booking_date', 'desc')
-            ->orderBy('start_time', 'desc')
-            ->paginate($filters['per_page'] ?? 20);
+        return $this->applyFilters($query, $filters)->paginate($filters['per_page'] ?? 20);
     }
 
     public function getForBusiness(int $businessId, array $filters = []): LengthAwarePaginator
     {
-        $query = Booking::with(['user', 'service', 'staff'])
-            ->where('business_id', $businessId);
+        $query = $this->model->where('business_id', $businessId)
+            ->with(['user', 'service', 'staff']);
 
-        $this->applyFilters($query, $filters);
-
-        return $query->orderBy('booking_date', 'desc')
-            ->orderBy('start_time', 'desc')
-            ->paginate($filters['per_page'] ?? 20);
+        return $this->applyFilters($query, $filters)->paginate($filters['per_page'] ?? 20);
     }
 
     public function checkAvailability(Service $service, Carbon $date, string $startTime, string $endTime, ?int $staffId = null): bool
@@ -147,6 +142,17 @@ class BookingRepository implements BookingRepositoryInterface
             ->get();
     }
 
+    public function getUpcomingForStaff(int $staffId, int $days = 7): Collection
+    {
+        return $this->model->where('staff_id', $staffId)
+            ->whereBetween('booking_date', [today(), today()->addDays($days)])
+            ->where('status', '!=', 'cancelled')
+            ->with(['user', 'service'])
+            ->orderBy('booking_date')
+            ->orderBy('start_time')
+            ->get();
+    }
+
     public function getConflictingBookings(Service $service, Carbon $date, string $startTime, string $endTime, ?int $excludeBookingId = null): Collection
     {
         $query = Booking::where('service_id', $service->id)
@@ -168,7 +174,7 @@ class BookingRepository implements BookingRepositoryInterface
         return $query->get();
     }
 
-    private function applyFilters($query, array $filters): void
+    private function applyFilters(Builder $query, array $filters): Builder
     {
         if (!empty($filters['status'])) {
             $query->where('status', $filters['status']);
@@ -193,11 +199,13 @@ class BookingRepository implements BookingRepositoryInterface
         if (!empty($filters['search'])) {
             $query->where(function ($q) use ($filters) {
                 $q->where('booking_ref', 'like', "%{$filters['search']}%")
-                  ->orWhereHas('user', function ($uq) use ($filters) {
-                      $uq->where('name', 'like', "%{$filters['search']}%")
-                        ->orWhere('email', 'like', "%{$filters['search']}%");
-                  });
+                    ->orWhereHas('user', function ($uq) use ($filters) {
+                        $uq->where('name', 'like', "%{$filters['search']}%")
+                          ->orWhere('email', 'like', "%{$filters['search']}%");
+                    });
             });
         }
+
+        return $query->orderBy('booking_date', 'desc')->orderBy('start_time', 'desc');
     }
 }
